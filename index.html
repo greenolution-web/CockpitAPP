@@ -159,6 +159,10 @@ body{padding-bottom:84px}
 .depchip{display:inline-flex;align-items:center;gap:6px;border:1px solid #C5CCC6;border-radius:999px;padding:3px 4px 3px 10px;font-size:12.5px;background:#fff}
 .depchip.bad{border-color:#B42318;background:#FBE4E4}
 .depchip button{border:0;background:transparent;font-size:15px;line-height:1;padding:2px 6px}
+.cap{height:6px;border-radius:4px;background:#E6E9E4;overflow:hidden}
+.cap span{display:block;height:100%;background:#0E6B57}
+.cap.over span{background:#B8700F}
+.weekwrap{display:flex;flex-direction:column;gap:16px;max-width:900px;margin:0 auto}
 .tray{display:flex;flex-wrap:wrap;gap:8px}
 .trchip{border:1px dashed #7B8781;background:#fff;border-radius:10px;padding:6px 12px;font-size:13px}
 </style>
@@ -201,7 +205,7 @@ var S = {
   mode: 'note', draft: '', qTitle: '', qDomain: 'PRAYAS', qBudget: 30,
   tab: 'today', modal: null, planSel: {}, weekOffset: 1, weekSel: {}, loadError: '',
   allTasks: [], notes: [], weekShowOther: false, allFilter: 'active', allDomain: '', allQuery: '', edit: null,
-  objectives: [], strategies: [], goals: [], checkins: [], goalTasks: [], deps: [],
+  objectives: [], strategies: [], goals: [], checkins: [], goalTasks: [], deps: [], wkOff: 0, wkTasks: [],
   road: { zoom: 'all', obj: null, sel: null, f: {}, form: null },
   rev: { off: 0, events: [], defer: {}, tasks: [] }
 };
@@ -259,6 +263,7 @@ var ICON = {
   plus: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   today: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
   day: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>',
+  week: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M7 14h2M11 14h2M15 14h2"/></svg>',
   list: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>'
 };
 
@@ -314,6 +319,12 @@ async function loadAll() {
   S.loadError = '';
 }
 async function loadExtra() {
+  if (S.tab === 'week') {
+    var wk0 = weekStart(S.wkOff), wk1 = ymd(addDays(pd(wk0), 6));
+    var wk = await sb.from('ck_tasks').select('*').or('and(today_date.gte.' + wk0 + ',today_date.lte.' + wk1 + '),week_pick_start.eq.' + wk0 + ',and(due_date.gte.' + wk0 + ',due_date.lte.' + wk1 + ')').limit(500);
+    fail('week', wk);
+    S.wkTasks = wk.data || [];
+  }
   if (S.modal === 'all') {
     var a = await sb.from('ck_tasks').select('*').order('created_at', { ascending: false }).limit(500);
     fail('all tasks', a);
@@ -475,7 +486,8 @@ function headerHtml() {
     '<span class="muted">' + esc(fmtDateLong(now)) + ' &middot; Week ' + isoWeek(now) + '</span>' +
     '<div class="rituals">' + chips + '</div>' +
     '<div class="actions">' +
-    '<button class="btn dark" data-act="openModal" data-m="today">Plan day</button>' +
+    (S.tab === 'week' ? '<button class="btn dark" data-act="tab" data-t="today">Today</button>' : '<button class="btn dark" data-act="tab" data-t="week">Week view</button>') +
+    '<button class="btn" data-act="openModal" data-m="today">Plan day</button>' +
     '<button class="btn" data-act="openModal" data-m="week">Plan week</button>' +
     '<button class="btn" data-act="openModal" data-m="road">Roadmap</button>' +
     '<button class="btn" data-act="openModal" data-m="review">Review</button>' +
@@ -941,6 +953,67 @@ function tickHtml(R, withText) {
   return out;
 }
 
+/* ---------- week view ---------- */
+var DAY_CAP = 360;
+function weekView() {
+  var ws = weekStart(S.wkOff), t0 = todayStr(), days = [], i;
+  for (i = 0; i < 7; i++) { days.push(ymd(addDays(pd(ws), i))); }
+  var we = days[6];
+  var tasks = S.wkTasks.filter(function (t) { return t.status !== 'dropped'; });
+  var by = {};
+  days.forEach(function (d) { by[d] = []; });
+  tasks.forEach(function (t) { if (t.today_date && by[t.today_date] && (t.status === 'open' || t.status === 'done')) by[t.today_date].push(t); });
+  var openN = 0, doneN = 0, planMin = 0;
+  days.forEach(function (d) { by[d].forEach(function (t) { if (t.status === 'done') doneN++; else { openN++; planMin += t.budget_min || 0; } }); });
+  function dayLabel(d) { return DAYS[pd(d).getDay()].slice(0, 3) + ' ' + fmtDay(d); }
+  function moveSel(t) {
+    return '<select class="tm" data-change="wkMove" data-id="' + t.id + '" aria-label="Move ' + esc(t.title) + ' to another day"><option value="">Move to\u2026</option>' +
+      days.map(function (d) { return '<option value="' + d + '"' + (t.today_date === d ? ' disabled' : '') + '>' + dayLabel(d) + '</option>'; }).join('') +
+      '<option value="none">Take off this week</option></select>';
+  }
+  function row(t, day) {
+    var isDone = t.status === 'done', missed = !isDone && day && day < t0, sub = [];
+    if (t.due_date) {
+      var overdue = t.due_date < t0 && !isDone;
+      sub.push('<span' + (overdue ? ' style="color:#9B2C2C;font-weight:500"' : '') + '>Due ' + esc(fmtDay(t.due_date)) + (overdue ? ' (overdue)' : '') + '</span>');
+    }
+    return '<div class="trow">' +
+      '<button class="chk' + (isDone ? ' on' : '') + '" data-act="toggle" data-id="' + t.id + '" aria-pressed="' + isDone + '" aria-label="' + (isDone ? 'Mark not done' : 'Mark done') + '">' + (isDone ? CHECK : '') + '</button>' +
+      '<div class="tmain"><button class="lnk ttitle' + (isDone ? ' done' : '') + '" data-act="editTask" data-id="' + t.id + '">' + esc(t.title) + '</button>' + (sub.length ? '<div class="tsub">' + sub.join(' &middot; ') + '</div>' : '') + '</div>' +
+      domChip(t.domain) + goalChip(t) + blockedChip(t) + (missed ? '<span class="chip red">Missed</span>' : '') +
+      (t.sched_start ? '<span class="chip mono">' + hm(t.sched_start) + '</span>' : '') + (t.budget_min ? '<span class="chip mono">' + fmtMin(t.budget_min) + '</span>' : '') +
+      (isDone ? '' : moveSel(t)) + '</div>';
+  }
+  var seg = '<div class="seg" role="group" aria-label="Which week"><button data-act="wkNav" data-d="-1">&larr; Earlier</button><button class="' + (S.wkOff === 0 ? 'on' : '') + '" data-act="wkNav" data-d="0">This week</button><button data-act="wkNav" data-d="1">Later &rarr;</button></div>';
+  var head = '<section class="card"><div class="row between" style="flex-wrap:wrap;gap:8px"><div><h1 style="font-size:26px;font-weight:600;letter-spacing:-.01em">Week of ' + esc(fmtDay(ws)) + '</h1>' +
+    '<div class="muted" style="font-size:14px;margin-top:2px">' + doneN + ' done &middot; ' + openN + ' still open' + (planMin ? ' &middot; ' + fmtMin(planMin) + ' planned' : '') + '</div></div>' + seg + '</div></section>';
+  var picks = tasks.filter(function (t) { return t.week_pick_start === ws; });
+  var big = picks.length ? '<section class="card"><div class="row between"><h2>Big 3 picks</h2><span class="muted" style="font-size:13px">Set at the weekly plan</span></div>' + picks.map(function (t) {
+    var d = t.status === 'done';
+    return '<div class="row" style="gap:10px;font-size:14px"><span aria-hidden="true">' + (d ? '\u2713' : '\u25cb') + '</span><button class="lnk" style="flex:1;min-width:0;' + (d ? 'color:#55625B;text-decoration:line-through' : '') + '" data-act="editTask" data-id="' + t.id + '">' + esc(t.title) + '</button>' + domChip(t.domain) +
+      '<span class="chip' + (t.today_date && days.indexOf(t.today_date) >= 0 ? '' : ' amber') + '">' + (d ? 'Done' : t.today_date && days.indexOf(t.today_date) >= 0 ? dayLabel(t.today_date) : 'Not on a day') + '</span></div>';
+  }).join('') + '</section>' : '';
+  var dayCards = days.map(function (d) {
+    var list = by[d].slice().sort(function (a, b) {
+      var ad = a.status === 'done' ? 1 : 0, bd = b.status === 'done' ? 1 : 0;
+      if (ad !== bd) return ad - bd;
+      var as = a.sched_start ? toMin(a.sched_start) : 9999, bs = b.sched_start ? toMin(b.sched_start) : 9999;
+      return as !== bs ? as - bs : ((a.sort_order - b.sort_order) || (a.created_at < b.created_at ? -1 : 1));
+    });
+    var mins = list.reduce(function (n, t) { return n + (t.status === 'done' ? 0 : (t.budget_min || 0)); }, 0);
+    var nOpen = list.filter(function (t) { return t.status !== 'done'; }).length, nDone = list.length - nOpen;
+    return '<section class="card flush"><div style="padding:14px 16px 8px"><div class="row between" style="flex-wrap:wrap"><h2>' + dayLabel(d) + (d === t0 ? ' <span class="chip green">Today</span>' : '') + '</h2>' +
+      '<span class="muted" style="font-size:13px">' + nOpen + ' open, ' + nDone + ' done' + (mins ? ' &middot; ' + fmtMin(mins) : '') + '</span></div>' +
+      '<div class="cap' + (mins > DAY_CAP ? ' over' : '') + '" style="margin-top:8px" title="Planned time against a ' + (DAY_CAP / 60) + ' hour day"><span style="width:' + Math.min(100, Math.round(mins / DAY_CAP * 100)) + '%"></span></div>' +
+      (mins > DAY_CAP ? '<div style="font-size:12.5px;color:#7A5A00;margin-top:4px">More than a ' + (DAY_CAP / 60) + ' hour day. Move something.</div>' : '') + '</div>' +
+      (list.map(function (t) { return row(t, d); }).join('') || '<div class="empty" style="border-top:1px solid #E6E9E4">Free day.</div>') +
+      '<div style="padding:10px 16px;border-top:1px solid #E6E9E4"><label class="sr" for="wd_' + d + '">Add a task to ' + dayLabel(d) + '</label><input id="wd_' + d + '" class="field" data-addday="' + d + '" placeholder="Add a task to ' + DAYS[pd(d).getDay()].slice(0, 3) + ', then press Enter"></div></section>';
+  }).join('');
+  var unplaced = tasks.filter(function (t) { return t.status === 'open' && (!t.today_date || days.indexOf(t.today_date) < 0) && (t.week_pick_start === ws || (t.due_date && t.due_date >= ws && t.due_date <= we)); });
+  var unCard = unplaced.length ? '<section class="card flush"><div style="padding:14px 16px"><h2>Not on a day yet (' + unplaced.length + ')</h2><div class="muted" style="font-size:13px">Picked or due this week, with no day. Choose where each goes.</div></div>' + unplaced.map(function (t) { return row(t, null); }).join('') + '</section>' : '';
+  return head + big + unCard + dayCards;
+}
+
 /* ---------- dependencies ---------- */
 function prereqsOf(id) { return S.deps.filter(function (d) { return d.task_id === id; }).map(function (d) { return d.depends_on; }); }
 function dependentsOf(id) { return S.deps.filter(function (d) { return d.depends_on === id; }).map(function (d) { return d.task_id; }); }
@@ -1304,18 +1377,18 @@ function render() {
     var inner = S.modal === 'today' ? planTodayModal(D) : S.modal === 'week' ? planWeekModal() : S.modal === 'all' ? allModal() : S.modal === 'notes' ? notesModal() : S.modal === 'road' ? roadHtml() : S.modal === 'review' ? reviewHtml() : shutdownModal(D);
     modalHtml = '<div class="veil" data-act="veil"><div class="panel' + (S.modal === 'road' || S.modal === 'review' ? ' wide' : '') + '" role="dialog" aria-modal="true">' + inner + '</div></div>';
   }
-  var tabs = [['capture', 'Capture', ICON.plus], ['today', 'Today', ICON.today], ['day', 'Day', ICON.day]];
+  var tabs = [['capture', 'Capture', ICON.plus], ['today', 'Today', ICON.today], ['day', 'Day', ICON.day], ['week', 'Week', ICON.week]];
   var nav = '<nav class="nav" aria-label="Main">' + tabs.map(function (t) {
     return '<button class="' + (S.tab === t[0] ? 'on' : '') + '" data-act="tab" data-t="' + t[0] + '"' + (S.tab === t[0] ? ' aria-current="page"' : '') + '>' + t[2] + t[1] + '</button>';
   }).join('') + '<button data-act="openModal" data-m="all">' + ICON.list + 'All</button></nav>';
 
   appEl.innerHTML = headerHtml() +
     (S.loadError ? '<div class="wrap" style="padding-bottom:0"><div class="card" role="alert"><span class="err">' + esc(S.loadError) + '</span><button class="btn sm" data-act="reload">Try again</button></div></div>' : '') +
-    '<main class="wrap"><div class="grid">' +
+    (S.tab === 'week' ? '<main class="wrap"><div class="weekwrap">' + weekView() + '</div></main>' : '<main class="wrap"><div class="grid">' +
     '<div class="col' + (S.tab === 'capture' ? ' active' : '') + '" data-tab="capture">' + captureCard() + inboxCard() + logCard() + '</div>' +
     '<div class="col' + (S.tab === 'today' ? ' active' : '') + '" data-tab="today">' + todayCard(D) + bigThreeCard() + soonCard(D) + habitsCard() + '</div>' +
     '<div class="col' + (S.tab === 'day' ? ' active' : '') + '" data-tab="day">' + timelineCard(D) + waitingCard(D) + '</div>' +
-    '</div></main>' + nav + modalHtml + editOverlay();
+    '</div></main>') + nav + modalHtml + editOverlay();
 
   if (S.modal === 'road') { drawDeps(); }
   if (keepId) {
@@ -1331,6 +1404,7 @@ function taskById(id) {
   for (var k = 0; k < S.allTasks.length; k++) { if (S.allTasks[k].id === id) return S.allTasks[k]; }
   for (var m = 0; m < S.goalTasks.length; m++) { if (S.goalTasks[m].id === id) return S.goalTasks[m]; }
   for (var q = 0; q < S.rev.tasks.length; q++) { if (S.rev.tasks[q].id === id) return S.rev.tasks[q]; }
+  for (var w2 = 0; w2 < S.wkTasks.length; w2++) { if (S.wkTasks[w2].id === id) return S.wkTasks[w2]; }
   return null;
 }
 var recog = null;
@@ -1354,7 +1428,7 @@ function dictate() {
 }
 
 var actions = {
-  tab: function (el) { S.tab = el.dataset.t; render(); },
+  tab: function (el) { S.tab = el.dataset.t; render(); if (S.tab === 'week') { loadExtra().then(render).catch(function (e) { toast('Could not load: ' + e.message); }); } },
   mode: function (el) { S.mode = el.dataset.m; render(); },
   openModal: function (el) {
     S.modal = el.dataset.m;
@@ -1743,6 +1817,12 @@ function endRdrag(e) {
 appEl.addEventListener('pointerup', endRdrag);
 appEl.addEventListener('pointercancel', function () { if (rdrag) { rdrag = null; if (rtip) { rtip.remove(); rtip = null; } render(); } });
 
+actions.wkNav = function (el) {
+  var d = +el.dataset.d;
+  S.wkOff = d === 0 ? 0 : S.wkOff + d;
+  render();
+  loadExtra().then(render).catch(function (e) { toast('Could not load: ' + e.message); });
+};
 appEl.addEventListener('click', function (e) {
   var el = e.target.closest('[data-act]');
   if (!el) return;
@@ -1760,6 +1840,13 @@ appEl.addEventListener('change', function (e) {
     }
   }
   else if (what === 'rf') { S.road.f[el.id.slice(3)] = el.value; if (el.id === 'rf_kind') render(); }
+  else if (what === 'wkMove') {
+    var v = el.value, mid = el.dataset.id;
+    if (v) {
+      var upd2 = v === 'none' ? { today_date: null, sched_start: null } : { today_date: v };
+      act(function () { return sb.from('ck_tasks').update(upd2).eq('id', mid); }, v === 'none' ? 'Taken off this week.' : 'Moved.');
+    }
+  }
   else if (what === 'rfdep') {
     var pid = el.value, sel = S.road.sel;
     if (pid && sel && sel.t === 't') { act(function () { return sb.from('ck_task_deps').insert({ task_id: sel.id, depends_on: pid }); }, 'Prerequisite added.'); }
@@ -1783,6 +1870,12 @@ appEl.addEventListener('input', function (e) {
 });
 appEl.addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && e.target.id === 'qTitle') { e.preventDefault(); actions.addTask(); }
+  if (e.key === 'Enter' && e.target.dataset && e.target.dataset.addday) {
+    e.preventDefault();
+    var wtitle = e.target.value.trim(), wday = e.target.dataset.addday;
+    if (!wtitle) return;
+    act(function () { return sb.from('ck_tasks').insert({ title: wtitle, domain: S.qDomain, budget_min: S.qBudget, status: 'open', priority: 'now', today_date: wday }); }, 'Added.');
+  }
   if (e.key === 'Enter' && e.target.dataset && e.target.dataset.addweek) {
     e.preventDefault();
     var title = e.target.value.trim(); var dom = e.target.dataset.addweek;
